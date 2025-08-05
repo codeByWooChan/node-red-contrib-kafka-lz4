@@ -1,0 +1,29 @@
+[
+    {
+        "id": "inject-1",
+        "type": "inject",
+        "name": "Test Data",
+        "payload": "{\"messageType\": \"str\", \"data\": {\"id\": 1, \"name\": 'codeByWooChan'}}",
+        "payloadType": "str",
+        "x": 120,
+        "y": 100,
+        "wires": [["kafka-lz4-1"]]
+    },
+    {
+        "id": "kafka-lz4-1",
+        "type": "kafka-lz4",
+        "name": "LZ4 Processor",
+        "outputFormat": "buffer",
+        "x": 300,
+        "y": 100,
+        "wires": [["debug-1"]]
+    },
+    {
+        "id": "debug-1",
+        "type": "debug",
+        "name": "Output",
+        "x": 480,
+        "y": 100,
+        "wires": []
+    }
+]

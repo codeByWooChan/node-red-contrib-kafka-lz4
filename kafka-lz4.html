@@ -1,0 +1,108 @@
+<script type="text/javascript">
+    RED.nodes.registerType('kafka-lz4', {
+        category: 'function',
+        color: '#a6bbcf',
+        defaults: {
+            name: {value: ""},
+            outputFormat: {value: "buffer"},
+            compressionLevel: {value: 1, validate: RED.validators.number()}
+        },
+        inputs: 1,
+        outputs: 1,
+        icon: "font-awesome/fa-compress",
+        label: function() {
+            return this.name || "kafka lz4";
+        },
+        labelStyle: function() {
+            return this.name ? "node_label_italic" : "";
+        }
+    });
+</script>
+
+<script type="text/html" data-template-name="kafka-lz4">
+    <div class="form-row">
+        <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
+        <input type="text" id="node-input-name" placeholder="Name">
+    </div>
+    <div class="form-row">
+        <label for="node-input-outputFormat"><i class="fa fa-file-code-o"></i> Output Format</label>
+        <select id="node-input-outputFormat">
+            <option value="buffer">Buffer</option>
+            <option value="base64">Base64 String</option>
+            <option value="hex">Hex String</option>
+        </select>
+    </div>
+    <div class="form-row">
+        <label for="node-input-compressionLevel"><i class="fa fa-compress"></i> Compression Level</label>
+        <input type="number" id="node-input-compressionLevel" min="1" max="9" value="1">
+    </div>
+</script>
+
+<script type="text/html" data-help-name="kafka-lz4">
+    <p>A Node-RED node that automatically decompresses LZ4-compressed messages from Kafka and recovers corrupted JSON data.</p>
+    
+    <h3>Inputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">string | buffer | object</span></dt>
+        <dd>Data to process. Can accept LZ4-compressed binary data, corrupted JSON strings, or regular data.</dd>
+    </dl>
+
+    <h3>Outputs</h3>
+    <dl class="message-properties">
+        <dt>payload <span class="property-type">object | string | buffer</span></dt>
+        <dd>Processed data. Output as parsed JSON object, cleaned string, or compressed buffer.</dd>
+        <dt>lz4 <span class="property-type">object</span></dt>
+        <dd>Processing information
+            <ul>
+                <li><code>operation</code> - Performed operation (decompress, cleanup, compress)</li>
+                <li><code>originalSize</code> - Original data size (bytes)</li>
+                <li><code>decompressedSize</code> - Decompressed data size (bytes, decompression only)</li>
+                <li><code>format</code> - Output format</li>
+            </ul>
+        </dd>
+    </dl>
+
+    <h3>Operation Mode</h3>
+    <dl class="message-properties">
+        <dt>Auto Detection</dt>
+        <dd>Analyzes input data and automatically selects the appropriate processing method:
+            <ul>
+                <li><strong>LZ4 Compressed Data</strong> - Automatically decompresses</li>
+                <li><strong>Corrupted JSON Data</strong> - Removes control characters and recovers structure</li>
+                <li><strong>Regular Data</strong> - Compresses only when compression is efficient</li>
+            </ul>
+        </dd>
+    </dl>
+
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Output Format</dt>
+        <dd>Select output format for compression:
+            <ul>
+                <li><strong>Buffer</strong> - Node.js Buffer object (default)</li>
+                <li><strong>Base64 String</strong> - Base64 encoded string</li>
+                <li><strong>Hex String</strong> - Hexadecimal string</li>
+            </ul>
+        </dd>
+        <dt>Compression Level</dt>
+        <dd>Compression level (1-9). Currently unused, reserved for future expansion.</dd>
+    </dl>
+
+    <h3>Use Case</h3>
+    <p>Used to automatically decompress LZ4-compressed messages from Kafka and recover JSON data that was corrupted during transmission.</p>
+    
+    <h3>Status Indicators</h3>
+    <ul>
+        <li><strong>Green dot</strong> - Ready or data compression completed</li>
+        <li><strong>Blue dot</strong> - LZ4 decompression or data cleanup completed</li>
+        <li><strong>Yellow ring</strong> - Warning (no payload, processing failed)</li>
+        <li><strong>Red ring</strong> - Operation failed</li>
+    </ul>
+    
+    <h3>Notes</h3>
+    <ul>
+        <li>Automatically detects input data type and performs appropriate processing.</li>
+        <li>Automatically converts to object when JSON parsing is possible.</li>
+        <li>Returns cleaned original data when compression efficiency is low.</li>
+    </ul>
+</script>
