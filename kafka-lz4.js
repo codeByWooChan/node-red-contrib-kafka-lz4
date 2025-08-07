@@ -73,45 +73,16 @@ module.exports = function(RED) {
                 
                 if (node.isCleanupMode) {
                     // Corrupted data cleanup mode
-                    try {
-                        let cleanText = node.cleanDecompressedText(inputData);
-                        const recoveredText = node.recoverJsonText(cleanText);
-                        
-                        try {
-                            const jsonData = JSON.parse(recoveredText);
-                            outputPayload = jsonData;
-                        } catch (e) {
-                            outputPayload = recoveredText || cleanText;
+                    outputPayload = node.processCorruptedData(inputData);
+                    outputMsg = {
+                        ...msg,
+                        payload: outputPayload,
+                        lz4: {
+                            operation: 'cleanup',
+                            originalSize: inputData.length
                         }
-                        
-                        outputMsg = {
-                            ...msg,
-                            payload: outputPayload,
-                            lz4: {
-                                operation: 'cleanup',
-                                originalSize: inputData.length
-                            }
-                        };
-                        
-                        node.status({
-                            fill: "blue", 
-                            shape: "dot", 
-                            text: `cleaned data`
-                        });
-                        
-                    } catch (error) {
-                        outputPayload = inputData;
-                        outputMsg = {
-                            ...msg,
-                            payload: outputPayload,
-                            lz4: {
-                                operation: 'cleanup_failed',
-                                error: error.message
-                            }
-                        };
-                        node.status({fill: "yellow", shape: "ring", text: "cleanup failed"});
-                    }
-                    
+                    };
+                    node.status({fill: "blue", shape: "dot", text: "cleaned data"});
                     node.isCleanupMode = false; // Reset
                 } else if (isDecompression) {
                     // Perform LZ4 decompression - try multiple methods
@@ -136,24 +107,7 @@ module.exports = function(RED) {
                     }
                     
                     if (decompressedData) {
-                        // Smart text cleanup
-                        let cleanText = node.cleanDecompressedText(decompressedText);
-                        
-                        // Try JSON parsing
-                        try {
-                            const jsonData = JSON.parse(cleanText);
-                            outputPayload = jsonData;
-                        } catch (e) {
-                            // If JSON parsing fails, try text recovery
-                            const recoveredText = node.recoverJsonText(cleanText);
-                            try {
-                                const jsonData = JSON.parse(recoveredText);
-                                outputPayload = jsonData;
-                            } catch (e2) {
-                                outputPayload = recoveredText || cleanText;
-                            }
-                        }
-                        
+                        outputPayload = node.processCorruptedData(decompressedText);
                         outputMsg = {
                             ...msg,
                             payload: outputPayload,
@@ -164,7 +118,6 @@ module.exports = function(RED) {
                                 format: 'decompressed'
                             }
                         };
-                        
                         node.status({
                             fill: "blue", 
                             shape: "dot", 
@@ -195,26 +148,7 @@ module.exports = function(RED) {
                     
                     // Check compression efficiency - return cleaned original if poor compression
                     if (parseFloat(compressionRatio) < 5) {
-                        // Clean original data
-                        let cleanedPayload = inputData.toString('utf8');
-                        if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/.test(cleanedPayload)) {
-                            cleanedPayload = node.cleanDecompressedText(cleanedPayload);
-                            const recoveredText = node.recoverJsonText(cleanedPayload);
-                            try {
-                                const jsonData = JSON.parse(recoveredText);
-                                outputPayload = jsonData;
-                            } catch (e) {
-                                outputPayload = recoveredText || cleanedPayload;
-                            }
-                        } else {
-                            try {
-                                const jsonData = JSON.parse(cleanedPayload);
-                                outputPayload = jsonData;
-                            } catch (e) {
-                                outputPayload = cleanedPayload;
-                            }
-                        }
-                        
+                        outputPayload = node.processCorruptedData(inputData.toString('utf8'));
                         outputMsg = {
                             ...msg,
                             payload: outputPayload,
@@ -223,12 +157,7 @@ module.exports = function(RED) {
                                 originalSize: originalSize
                             }
                         };
-                        
-                        node.status({
-                            fill: "blue", 
-                            shape: "dot", 
-                            text: `cleaned data`
-                        });
+                        node.status({fill: "blue", shape: "dot", text: "cleaned data"});
                     } else {
                         // Return compressed data only if compression is efficient
                         switch (node.outputFormat) {
@@ -273,6 +202,19 @@ module.exports = function(RED) {
             }
         });
         
+        // Process corrupted data (unified function for cleanup, decompression, and compression)
+        node.processCorruptedData = function(data) {
+            try {
+                const cleanText = node.cleanDecompressedText(data);
+                const recoveredText = node.recoverJsonText(cleanText);
+                return node.tryParseJson(recoveredText) || 
+                       node.tryParseJson(cleanText) || 
+                       recoveredText || cleanText;
+            } catch (error) {
+                return data;
+            }
+        };
+        
         // Text cleanup function
         node.cleanDecompressedText = function(text) {
             // 1. Remove control characters
@@ -299,6 +241,12 @@ module.exports = function(RED) {
                 
                 let jsonText = text.substring(jsonStart, jsonEnd + 1);
                 
+                // 0. Fix JSON start structure (remove invalid characters after {)
+                jsonText = node.fixJsonStart(jsonText);
+                
+                // 0.1. Fix JSON end structure (remove invalid characters before })
+                jsonText = node.fixJsonEnd(jsonText);
+                
                 // 1. Remove control characters and corrupted characters
                 jsonText = jsonText.replace(/[^\x20-\x7E\s{}[\]":,.-]/g, '');
                 
@@ -317,6 +265,233 @@ module.exports = function(RED) {
             } catch (error) {
                 return text;
             }
+        };
+        
+        // Fix JSON start structure function
+        node.fixJsonStart = function(jsonText) {
+            try {
+                // Check if it starts correctly with {" or { "
+                if (/^{\s*"/.test(jsonText)) {
+                    return jsonText; // Already in correct format
+                }
+                
+                // Handle cases with invalid characters after { or { (space)
+                // Patterns: { 7e{", { $:b{", { {", {T1{", etc.
+                const patterns = [
+                    // Pattern 1: { + invalid_chars + {"
+                    /^{\s*([^"{}]+)({.*)/,
+                    // Pattern 2: {{ or {{{ etc.
+                    /^{+(.*)$/,
+                    // Pattern 3: { + space + invalid + {"
+                    /^{\s+([^"{}]+)({.*)/
+                ];
+                
+                for (const pattern of patterns) {
+                    const match = jsonText.match(pattern);
+                    if (match) {
+                        const remainingPart = match[2] || match[1];
+                        
+                        // Try different candidates
+                        const candidates = [
+                            remainingPart, // Direct remaining part
+                            '{' + remainingPart, // Add single bracket
+                            remainingPart.startsWith('"') ? '{' + remainingPart : null // Add bracket if starts with quote
+                        ].filter(Boolean);
+                        
+                        for (const candidate of candidates) {
+                            if (candidate.startsWith('{') && candidate.includes('"')) {
+                                // Basic validation: check if it looks like JSON
+                                try {
+                                    // Try a simple structure check
+                                    if (node.looksLikeJson(candidate)) {
+                                        return candidate;
+                                    }
+                                } catch (e) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                return jsonText;
+            } catch (error) {
+                return jsonText;
+            }
+        };
+        
+        // Quick check if text looks like JSON structure
+        node.looksLikeJson = function(text) {
+            try {
+                if (!text || !text.startsWith('{') || !text.includes('"')) {
+                    return false;
+                }
+                
+                // Check for basic JSON patterns
+                const hasKeyValuePairs = /"[^"]*"\s*:\s*[^,}]+/.test(text);
+                const hasValidEnding = text.trim().endsWith('}') || text.trim().endsWith(']');
+                
+                return hasKeyValuePairs && hasValidEnding;
+            } catch (error) {
+                return false;
+            }
+        };
+        
+        // Fix JSON end structure function
+        node.fixJsonEnd = function(jsonText) {
+            try {
+                // Simple case: check for excessive closing brackets like }}}, ]}}, etc.
+                const excessiveBrackets = /^(.*["\]\}])\s*([\]\}]{2,})$/;
+                const match = jsonText.match(excessiveBrackets);
+                
+                if (match) {
+                    const mainPart = match[1];
+                    
+                    // Try different valid single endings
+                    const candidates = [
+                        mainPart + '}',
+                        mainPart + ']',
+                        mainPart + ']}',
+                        mainPart + '}}'
+                    ];
+                    
+                    for (const candidate of candidates) {
+                        if (node.isValidJsonStructure(candidate)) {
+                            return candidate;
+                        }
+                    }
+                }
+                
+                // More complex patterns: handle invalid characters before closing brackets
+                const patterns = [
+                    // Pattern 1: "value"}} -> "value"}
+                    /^(.*"[^"]*")\s*}+$/,
+                    // Pattern 2: ...]} + extra }
+                    /^(.*[\]\}])\s*[\]\}]+$/,
+                    // Pattern 3: ...} + invalid chars + }
+                    /(.*["\]\}])([^"\]\}\s]+)}+$/
+                ];
+                
+                for (const pattern of patterns) {
+                    const patternMatch = jsonText.match(pattern);
+                    if (patternMatch) {
+                        const mainPart = patternMatch[1];
+                        
+                        // Try different valid endings
+                        const candidates = [
+                            mainPart + '}',
+                            mainPart + ']',
+                            mainPart + ']}',
+                            mainPart
+                        ];
+                        
+                        for (const candidate of candidates) {
+                            if (node.isValidJsonStructure(candidate)) {
+                                return candidate;
+                            }
+                        }
+                    }
+                }
+                
+                return jsonText;
+            } catch (error) {
+                return jsonText;
+            }
+        };
+        
+        // Check if text has valid JSON structure
+        node.isValidJsonStructure = function(text) {
+            try {
+                // Basic structure checks
+                if (!text || typeof text !== 'string') {
+                    return false;
+                }
+                
+                // Must start with { and end with } or ]
+                if (!text.trim().startsWith('{')) {
+                    return false;
+                }
+                
+                const trimmed = text.trim();
+                if (!trimmed.endsWith('}') && !trimmed.endsWith(']')) {
+                    return false;
+                }
+                
+                // Check bracket balance
+                let braceCount = 0;
+                let bracketCount = 0;
+                let inString = false;
+                let escaped = false;
+                
+                for (let i = 0; i < trimmed.length; i++) {
+                    const char = trimmed[i];
+                    
+                    if (escaped) {
+                        escaped = false;
+                        continue;
+                    }
+                    
+                    if (char === '\\') {
+                        escaped = true;
+                        continue;
+                    }
+                    
+                    if (char === '"') {
+                        inString = !inString;
+                        continue;
+                    }
+                    
+                    if (!inString) {
+                        if (char === '{') braceCount++;
+                        else if (char === '}') braceCount--;
+                        else if (char === '[') bracketCount++;
+                        else if (char === ']') bracketCount--;
+                    }
+                }
+                
+                // Brackets should be balanced
+                return braceCount === 0 && bracketCount === 0;
+                
+            } catch (error) {
+                return false;
+            }
+        };
+        
+        // Try to parse JSON with multiple attempts
+        node.tryParseJson = function(text) {
+            if (!text || typeof text !== 'string') return null;
+            
+            const attempts = [
+                // Direct parsing
+                () => JSON.parse(text),
+                
+                // Fix common issues
+                () => {
+                    let fixed = text
+                        .replace(/,(\s*[}\]])/g, '$1')  // trailing commas
+                        .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')  // unquoted keys
+                        .replace(/'/g, '"')  // single to double quotes
+                        .trim();
+                    return JSON.parse(fixed);
+                },
+                
+                // Extract JSON from mixed content
+                () => {
+                    const match = text.match(/{.*}/s);
+                    return match ? JSON.parse(match[0]) : null;
+                }
+            ];
+            
+            for (const attempt of attempts) {
+                try {
+                    const result = attempt();
+                    if (result !== null) return result;
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            return null;
         };
         
         node.on('close', function() {
